@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="theme-color" content="#172033">
+<title>SG90 远程控制</title>
+<style>
+  :root { color-scheme: light; --bg:#f3f5f9; --panel:#fff; --text:#172033; --muted:#667085; --line:#dfe4ec; --accent:#2457d6; --good:#16804a; --bad:#b42318; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:18px; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
+  main { max-width:520px; margin:0 auto; }
+  h1 { font-size:1.55rem; margin:4px 0 6px; }
+  .sub { margin:0 0 18px; color:var(--muted); font-size:.94rem; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:16px; margin:12px 0; }
+  h2 { font-size:1.05rem; margin:0 0 12px; }
+  label { display:block; font-size:.9rem; font-weight:600; margin:11px 0 5px; }
+  input { width:100%; padding:12px; border:1px solid #cbd2df; border-radius:10px; font-size:16px; background:#fff; color:var(--text); }
+  button { border:0; border-radius:12px; padding:13px 10px; font-size:1rem; font-weight:700; cursor:pointer; min-height:48px; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .primary { background:var(--accent); color:#fff; width:100%; margin-top:14px; }
+  .angles { display:grid; grid-template-columns:repeat(3,1fr); gap:9px; }
+  .angles button { background:#edf2ff; color:#173eaa; border:1px solid #d5e0ff; }
+  .tests { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
+  .start { background:#e7f6ec; color:#17683a; }
+  .stop { background:#fff0ef; color:#a12620; }
+  .status { display:flex; align-items:center; gap:8px; font-weight:700; }
+  .dot { width:10px; height:10px; border-radius:50%; background:#98a2b3; display:inline-block; }
+  .dot.good { background:var(--good); } .dot.bad { background:var(--bad); }
+  #log { white-space:pre-wrap; overflow-wrap:anywhere; font-family:ui-monospace,monospace; font-size:.84rem; background:#101828; color:#e6edf7; padding:12px; border-radius:10px; min-height:70px; max-height:220px; overflow:auto; }
+  .note { color:var(--muted); font-size:.84rem; line-height:1.5; }
+  .warn { color:#8a4b08; background:#fff7e8; border:1px solid #f5d59b; padding:11px; border-radius:10px; font-size:.85rem; line-height:1.45; }
+  @media (prefers-color-scheme: dark) {
+    /* Keep controls readable even when the phone uses dark mode. */
+    body { background:#f3f5f9; color:#172033; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>SG90 远程控制</h1>
+  <p class="sub">通过 MQTT WebSocket 控制 ESP32 舵机</p>
+
+  <section>
+    <h2>连接设置</h2>
+    <div class="warn">仅供个人测试。账号密码会由当前浏览器用于登录 MQTT，请勿公开分享此网页或在公共设备上使用。</div>
+    <label for="username">MQTT 用户名</label>
+    <input id="username" autocomplete="username" placeholder="输入 MQTT 用户名">
+    <label for="password">MQTT 密码</label>
+    <input id="password" type="password" autocomplete="current-password" placeholder="输入 MQTT 密码">
+    <label for="topic">控制主题</label>
+    <input id="topic" value="servo/test/esp32_7f3a91" spellcheck="false">
+    <button id="connectBtn" class="primary">连接 MQTT</button>
+    <p class="note">服务器：wss://mqttyyc.top:8084/mqtt</p>
+    <div class="status"><span id="dot" class="dot"></span><span id="status">尚未连接</span></div>
+  </section>
+
+  <section>
+    <h2>角度控制</h2>
+    <div class="angles">
+      <button data-command="left" disabled>左转<br>0°</button>
+      <button data-command="center" disabled>回中<br>90°</button>
+      <button data-command="right" disabled>右转<br>180°</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>往返测试</h2>
+    <div class="tests">
+      <button class="start" data-command="test_start" disabled>▶ 启动测试</button>
+      <button class="stop" data-command="test_stop" disabled>■ 停止测试</button>
+    </div>
+    <p class="note">测试范围：30°—150°。如舵机持续嗡鸣、顶住机械限位或明显发热，请立即断电。</p>
+  </section>
+
+  <section>
+    <h2>运行记录</h2>
+    <div id="log">网页已加载。请输入 MQTT 账号后点击“连接 MQTT”。</div>
+  </section>
+  <p class="note">网页不会把账号密码写入文件或主动保存到本地存储。断开连接或关闭网页后，当前页面内存中的凭据随页面结束而释放。当前连接仍使用服务端提供的 TLS WebSocket。</p>
+</main>
+
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script>
+(() => {
+  const URL = "wss://mqttyyc.top:8084/mqtt";
+  const $ = id => document.getElementById(id);
+  const logBox = $("log");
+  const buttons = [...document.querySelectorAll("[data-command]")];
+  let client = null;
+
+  function log(message) {
+    const stamp = new Date().toLocaleTimeString();
+    logBox.textContent = `[${stamp}] ${message}\n` + logBox.textContent;
+  }
+  function setStatus(text, kind = "") {
+    $("status").textContent = text;
+    $("dot").className = "dot" + (kind ? " " + kind : "");
+  }
+  function setControls(enabled) {
+    buttons.forEach(button => button.disabled = !enabled);
+  }
+  function disconnect() {
+    if (client) {
+      try { client.end(true); } catch (_) {}
+      client = null;
+    }
+    setControls(false);
+    $("connectBtn").textContent = "连接 MQTT";
+    setStatus("尚未连接");
+  }
+
+  $("connectBtn").addEventListener("click", () => {
+    if (client && client.connected) {
+      disconnect();
+      log("已断开 MQTT 连接");
+      return;
+    }
+    if (!window.mqtt) {
+      setStatus("MQTT 客户端库加载失败", "bad");
+      log("无法加载 MQTT.js。请检查网络后重新打开网页。");
+      return;
+    }
+    const username = $("username").value.trim();
+    const password = $("password").value;
+    const topic = $("topic").value.trim();
+    if (!username || !password || !topic) {
+      log("请填写 MQTT 用户名、密码和主题。");
+      return;
+    }
+
+    $("connectBtn").disabled = true;
+    setStatus("正在连接…");
+    log("正在连接 MQTT 服务…");
+    const clientId = "web-servo-" + Math.random().toString(16).slice(2, 10);
+
+    client = mqtt.connect(URL, {
+      clientId,
+      username,
+      password,
+      clean: true,
+      connectTimeout: 10000,
+      reconnectPeriod: 0,
+      keepalive: 30
+    });
+
+    client.on("connect", () => {
+      log("MQTT 连接成功，正在订阅控制主题…");
+      client.subscribe(topic, { qos: 0 }, err => {
+        $("connectBtn").disabled = false;
+        if (err) {
+          setStatus("订阅失败", "bad");
+          log("订阅失败：" + err.message);
+          return;
+        }
+        setStatus("已连接", "good");
+        $("connectBtn").textContent = "断开连接";
+        setControls(true);
+        log("已订阅主题：" + topic);
+      });
+    });
+    client.on("error", err => {
+      $("connectBtn").disabled = false;
+      setStatus("连接错误", "bad");
+      log("MQTT 错误：" + (err && err.message ? err.message : String(err)));
+    });
+    client.on("close", () => {
+      setControls(false);
+      $("connectBtn").disabled = false;
+      $("connectBtn").textContent = "连接 MQTT";
+      setStatus("连接已关闭");
+      log("MQTT 连接已关闭");
+    });
+    client.on("offline", () => {
+      setStatus("离线", "bad");
+      log("MQTT 客户端离线");
+    });
+    client.on("message", (receivedTopic, payload) => {
+      log("收到消息 [" + receivedTopic + "]: " + payload.toString());
+    });
+  });
+
+  buttons.forEach(button => {
+    button.addEventListener("click", () => {
+      const command = button.dataset.command;
+      const topic = $("topic").value.trim();
+      if (!client || !client.connected) {
+        log("尚未连接 MQTT。");
+        return;
+      }
+      client.publish(topic, command, { qos: 0, retain: false }, err => {
+        if (err) {
+          log("发送失败：" + err.message);
+        } else {
+          log("已发送指令：" + command);
+        }
+      });
+    });
+  });
+
+  window.addEventListener("beforeunload", () => {
+    if (client) {
+      try { client.end(true); } catch (_) {}
+    }
+  });
+})();
+</script>
+</body>
+</html>
