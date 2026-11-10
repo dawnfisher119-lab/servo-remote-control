@@ -64,7 +64,7 @@ button{border:0;border-radius:12px;padding:13px 10px;font-size:1rem;font-weight:
     setStatus("已连接","good");$("connectBtn").textContent="断开连接";setControls(true);log("已订阅主题："+topic)
    })
   });
-  client.on("error",err=>{$("connectBtn").disabled=false;setStatus("连接错误","bad");log("MQTT 错误："+(err&&err.message?err.message:String(err))});
+  client.on("error",err=>{$("connectBtn").disabled=false;setStatus("连接错误","bad");log("MQTT 错误："+(err&&err.message?err.message:String(err)));});
   client.on("close",()=>{setControls(false);$("connectBtn").disabled=false;$("connectBtn").textContent="连接 MQTT";setStatus("连接已关闭");log("MQTT 连接已关闭")});
   client.on("offline",()=>{setStatus("离线","bad");log("MQTT 客户端离线")});
   client.on("message",(t,p)=>log("收到消息 ["+t+"]: "+p.toString()))
